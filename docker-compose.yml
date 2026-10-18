@@ -1,0 +1,137 @@
+# =============================================================================
+# AI Hackathon — Docker Compose Configuration
+# =============================================================================
+# Orchestrates the complete PoC platform with a single command:
+#   docker compose up --build
+#
+# Prerequisites:
+#   - Docker Engine 24+ and Docker Compose V2
+#   - Copy .env.example to .env and configure credentials
+#
+# Services:
+#   frontend  — React SPA served via Nginx (port 3000)
+#   backend   — Java Spring Boot REST API (port 8080)
+#   redis     — Redis 7 with AOF persistence (port 6379)
+#
+# Data Persistence:
+#   Redis data survives stop/restart/rebuild via the 'redis-data' named volume.
+#   Data is ONLY lost on: docker compose down -v (explicit volume removal).
+# =============================================================================
+
+services:
+  # ---------------------------------------------------------------------------
+  # Frontend: React SPA → Nginx Reverse Proxy
+  # ---------------------------------------------------------------------------
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        VITE_API_BASE_URL: /api
+    container_name: hackathon-frontend
+    ports:
+      - "${FRONTEND_PORT:-3000}:3000"
+    depends_on:
+      backend:
+        condition: service_healthy
+    environment:
+      - NODE_ENV=production
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
+    networks:
+      - hackathon-net
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # Backend: Java Spring Boot REST API
+  # ---------------------------------------------------------------------------
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: hackathon-backend
+    ports:
+      - "${BACKEND_PORT:-8080}:8080"
+    depends_on:
+      redis:
+        condition: service_healthy
+    environment:
+      # --- Spring Boot Configuration ---
+      - SPRING_PROFILES_ACTIVE=${SPRING_PROFILES_ACTIVE:-docker}
+      - SERVER_PORT=8080
+
+      # --- Redis Connection ---
+      - SPRING_DATA_REDIS_HOST=redis
+      - SPRING_DATA_REDIS_PORT=6379
+
+      # --- Authentication Credentials (externalized) ---
+      - ADMIN_USERNAME=${ADMIN_USERNAME:-admin}
+      - ADMIN_PASSWORD=${ADMIN_PASSWORD:-HackAI2026!}
+      - TECH_USERNAME=${TECH_USERNAME:-tech}
+      - TECH_PASSWORD=${TECH_PASSWORD:-TechField2026!}
+
+      # --- External API Keys (optional) ---
+      - NASA_POWER_API_URL=${NASA_POWER_API_URL:-https://power.larc.nasa.gov/api}
+      - NREL_API_KEY=${NREL_API_KEY:-DEMO_KEY}
+
+      # --- JVM Tuning (container-aware) ---
+      - JAVA_OPTS=-XX:+UseContainerSupport -XX:MaxRAMPercentage=75.0
+    volumes:
+      # File-backed fallback store persists across container restarts
+      - backend-data:/app/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/actuator/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 40s
+    networks:
+      - hackathon-net
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # Redis: Persistent In-Memory Data Store
+  # ---------------------------------------------------------------------------
+  redis:
+    image: redis:7-alpine
+    container_name: hackathon-redis
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    command: >
+      redis-server
+        --appendonly yes
+        --appendfsync everysec
+        --save 60 1
+        --maxmemory 256mb
+        --maxmemory-policy allkeys-lru
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+    networks:
+      - hackathon-net
+    restart: unless-stopped
+
+# =============================================================================
+# Networks
+# =============================================================================
+networks:
+  hackathon-net:
+    driver: bridge
+
+# =============================================================================
+# Volumes — Named volumes survive container lifecycle
+# =============================================================================
+volumes:
+  redis-data:
+    driver: local
+  backend-data:
+    driver: local
